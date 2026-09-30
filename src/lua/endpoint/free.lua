@@ -113,7 +113,7 @@ on_init = function()
 			action:update_enable_control(true)
 
 			action:restart_navigation {
-				global_map = "rmuc",
+				global_map = "战队",
 				launch_livox = true,
 				launch_odin1 = false,
 				use_sim_time = false,

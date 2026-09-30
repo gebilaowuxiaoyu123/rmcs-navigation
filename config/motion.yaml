@@ -2,163 +2,280 @@
 bt_navigator:
   ros__parameters:
     global_frame: world
+    # 全局坐标系，发目标的 frame_id 必须是它
     robot_base_frame: base_link
+    # 机器人本体坐标系，须与 TF 树一致
     navigators: ["navigate_to_pose"]
+    # 只注册「点到点」导航
     navigate_to_pose:
       plugin: "nav2_bt_navigator::NavigateToPoseNavigator"
+      # 上面名字的实现类
 
-# 全局地图 + 全局规划
+# 全局地图 + 全局规划器（★ 验收改动点）
 planner_server:
   ros__parameters:
     planner_plugins: ["GridBased"]
+    # 插件别名，下面 GridBased 就是它的参数块
     GridBased:
-      plugin: "nav2_navfn_planner::NavfnPlanner"
+      plugin: "nav2_smac_planner::SmacPlannerLattice"
+      # 换规划器只改这一行
+      motion_model: "STATE_LATTICE"
+      # Lattice 必须显式给：不写默认也是它，但写出来便于排查
+      
+      # ★ 必须用 omni 那份。默认值是 ackermann，给阿克曼车用的
+      # 本车自己生成的：config/lattice/omni_10cm.json（omni + grid_resolution=0.1，与代价图对齐）
+      lattice_filepath: "/rmcs_install/rmcs-navigation/share/rmcs-navigation/lattice/omni_10cm.json"
       tolerance: 0.5
+      # 目标容差(m)，起终点在障碍上时就近找可通行点
       use_astar: true
+      # NavFn 遗留参数，Smac2D 不认（内部固定 A*）
       allow_unknown: true
+      # 允许穿越未知区域（实扫图边缘有未知区）
       use_final_approach_orientation: false
+      # 到点不强制对齐朝向
 
 global_costmap:
   global_costmap:
+    # 双层同名 key 是 Nav2 固定写法
     ros__parameters:
       initial_transform_timeout: 120.0
+      # 等 TF 的超时(s)
       global_frame: world
+      # 全局图坐标系
       robot_base_frame: base_link
+      # 机器人本体坐标系
       footprint: "[[0.1, 0.1], [0.1, -0.1], [-0.1, -0.1], [-0.1, 0.1]]"
+      # 0.2m 方，与局部 0.495 不一致（遗留 bug）
       update_frequency: 5.0
+      # 重算频率(Hz)
       publish_frequency: 5.0
+      # 发布频率(Hz)
       always_send_full_costmap: true
+      # 每次发整张图（非增量）
       plugins: ["static_layer", "inflation_layer"]
+      # 无 obstacle 层，看不到实时障碍
 
       static_layer:
+        # 把 /map 搬进来当底图
         plugin: "nav2_costmap_2d::StaticLayer"
         map_topic: "/map"
+        # 底图话题
         map_subscribe_transient_local: true
+        # 晚连上也能拿到图
         subscribe_to_updates: true
+        # 订阅增量更新
 
       inflation_layer:
+        # 障碍周围生成危险梯度，把路径推离墙
         plugin: "nav2_costmap_2d::InflationLayer"
         inflation_radius: 0.5
+        # 膨胀半径(m)，调小更贴墙（官方 tcd-test 0.22/0.34）
         cost_scaling_factor: 0.5
+        # 代价衰减率，越大衰减越快、越敢贴墙
+        # Nav2 默认 3.0；原值 0.5 太小 ⇒ 整条膨胀带都是 224~252 的天价（critical_cost 才 120）
+        # ⇒ 车只要靠近墙 0.5m 内就被当成「快撞上」，窄口根本不敢进。改 inflation_radius 无用就是因为它。
 
-# 局部地图 + 局部规划
+# 局部地图 + 局部规划 / 控制
 controller_server:
   ros__parameters:
     global_frame: world
+    # 全局坐标系
     controller_frequency: 20.0
+    # 控制环频率(Hz)；掉到 ~15.8Hz 就是卡顿来源
 
-    # 进度检查，超时没有移动会导向导航事件失败
     progress_checker_plugin: "progress_checker"
+    # 进度检查插件别名
     current_progress_checker: "progress_checker"
+    # 当前启用哪个
     progress_checker:
+      # 超时没动就判失败
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.08
+      # 至少移动多少 m 算「有进展」
       movement_time_allowance: 4.0
+      # 超时秒数
 
-    # 目标检查，一般不检查旋转角
     goal_checker_plugins: ["general_goal_checker"]
+    # 目标检查插件别名
     current_goal_checker: "general_goal_checker"
+    # 当前启用哪个
     general_goal_checker:
+      # 只看位置，不看朝向
       plugin: "nav2_controller::PositionGoalChecker"
-      xy_goal_tolerance: 0.1
+      xy_goal_tolerance: 0.25
+      # 到点容差(m)，实车建议 0.25
 
-    # 布局规划核心
     controller_plugins: ["FollowPath"]
+    # 局部控制器插件别名
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
+      # MPPI 局部控制器
       motion_model: "Omni"
+      # 运动模型，全向底盘用 Omni
       time_steps: 50
+      # 轨迹推演步数（×0.05 = 2.5s 预测窗）
       model_dt: 0.05
+      # 每步时间间隔(s)
       batch_size: 1400
+      # 每轮采样轨迹条数，越大越吃 CPU
       iteration_count: 1
+      # 每周期迭代次数
       prune_distance: 6.0
+      # 只用全局路径前方 6m 打分
       transform_tolerance: 0.1
+      # TF 插值延迟(s)
       regenerate_noises: true
+      # 每周期重新采样噪声
       retry_attempt_limit: 6
+      # 失败重试次数
       visualize: true
+      # 发布调试图（Foxglove 看）
 
       # 速度与加速度限制
       vx_max: +2.0
+      # 前进最大速度(m/s)
       vx_min: -2.0
+      # 后退最大速度
       vy_max: +2.0
+      # 左移最大速度
       vy_min: -2.0
+      # 右移最大速度
       wz_max: +0.001
+      # angular.z 被 navigation.cc 丢弃，无效
       ax_max: +20.0
+      # 最大线加速度(m/s²)
       ax_min: -20.0
+      # 最大减速度
       ay_max: +20.0
+      # 最大横加速度
       ay_min: -20.0
+      # 最大横减速度
       az_max: +0.001
+      # 同上被忽略
 
-      # 采样噪声，鼓励左右探索
+      # 采样噪声：决定往哪些方向「试」
       vx_std: 0.55
+      # 前向速度噪声
       vy_std: 0.55
+      # 横向速度噪声（全向车靠它探索横移）
       wz_std: 0.001
+      # 角速度噪声，被丢弃
       temperature: 0.34
+      # 温度，越小越贪心
       gamma: 0.015
+      # 不确定性折扣
 
+      # 代价项列表，加权求和
       critics:
         [
           "ConstraintCritic",
+          # 违反速度/加速度约束就罚
           "CostCritic",
+          # 撞障碍重罚（保命）
           "GoalCritic",
+          # 离目标近就奖
           "PathAlignCritic",
+          # 方向是否与全局路径一致
           "PathFollowCritic",
+          # 是否往前推进
         ]
       ConstraintCritic:
         enabled: true
         cost_weight: 5.0
+        # 约束惩罚权重
       CostCritic:
         enabled: true
         cost_weight: 10.0
-        critical_cost: 120.0
+        # 基础权重
+        critical_cost: 300.0
+        # 危险代价附加惩罚
         collision_cost: 8000000.0
+        # 撞上障碍（≈绝不允许）
         near_collision_cost: 230
+        # 接近碰撞的代价
         cost_power: 2
+        # 代价取几次幂
         consider_footprint: true
+        # 用 footprint 做碰撞检查
         near_goal_distance: 0.3
+        # 距目标 0.3m 内降低惩罚
         trajectory_point_step: 1
+        # 每几个轨迹点查一次代价
       GoalCritic:
         enabled: true
-        cost_weight: 5.0
+        cost_weight: 3.0
+        # 接近目标的奖励权重
         threshold_to_consider: 1.0
+        # 距目标 1m 内才生效
       PathAlignCritic:
         enabled: true
-        cost_weight: 0.8
+        cost_weight: 4.7
+        # ★ 调大 = 更贴全局路径（官方 tcd-test 用 4.5）
         threshold_to_consider: 1.0
+        # 距目标 1m 内开始降权
         trajectory_point_step: 3
+        # 每 3 个轨迹点取一个
       PathFollowCritic:
         enabled: true
         cost_weight: 3.2
+        # ★ 调大 = 更急着推进（官方 tcd-test 用 2.4）
         threshold_to_consider: 1.0
+        # 距目标 1m 内开始降权
 
+# 局部代价地图（跟车滚动的小窗口）
 local_costmap:
   local_costmap:
+    # 双层同名 key 是 Nav2 固定写法
     ros__parameters:
       initial_transform_timeout: 120.0
+      # 等 TF 的超时(s)
       global_frame: base_link
+      # 局部图挂在 base_link（随车移动）
       robot_base_frame: base_link
+      # 机器人本体坐标系
       footprint: "[[0.2475, 0.2475], [0.2475, -0.2475], [-0.2475, -0.2475], [-0.2475, 0.2475]]"
+      # 0.495m 方（这份是对的）
       update_frequency: 10.0
+      # 重算频率(Hz)
       publish_frequency: 10.0
+      # 发布频率(Hz)
       always_send_full_costmap: true
+      # 每次发整张图
       rolling_window: true
+      # 跟随机器人滚动
       width: 16
+      # 窗口宽(m)
       height: 16
+      # 窗口高(m)
       resolution: 0.04
+      # 分辨率(m/格)，16÷0.04 = 400 格
       transform_tolerance: 0.1
+      # TF 插值延迟(s)
       track_unknown_space: false
+      # 未知区域当自由空间
       plugins: [static_layer, inflation_layer]
+      # 只启这两层
 
       static_layer:
+        # 挂的是 /local_map（实时障碍），不是 /map
         plugin: nav2_costmap_2d::StaticLayer
         map_topic: /local_map
+        # 来自 rmcs_local_map，直接在 base_link 系下给障碍
         map_subscribe_transient_local: false
+        # 不用 latched QoS
         subscribe_to_updates: true
+        # 订阅增量更新
         use_maximum: true
+        # 与已有层取最大值
         track_unknown_space: false
+        # 未知区域当自由空间
         lethal_cost_threshold: 90
+        # 灰度≥90 视为致命障碍（实扫图有噪点）
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         inflation_radius: 0.5
+        # 膨胀半径(m)
         cost_scaling_factor: 0.5
+        # 代价衰减率，越大衰减越快、越敢贴墙（Nav2 默认 3.0；原值 0.5 会让整条膨胀带都是天价）
+        # 注意：致命带由 footprint 的 inscribed_radius 决定，与本值无关 ⇒ 改了碰撞保护不变，只是不再「贴着墙就怂」

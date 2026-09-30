@@ -15,6 +15,10 @@ install(
     DESTINATION share/${PROJECT_NAME}/maps/
 )
 install(
+    DIRECTORY lattice/
+    DESTINATION share/${PROJECT_NAME}/lattice/
+)
+install(
     DIRECTORY src/lua/
     DESTINATION share/${PROJECT_NAME}/lua/
 )
