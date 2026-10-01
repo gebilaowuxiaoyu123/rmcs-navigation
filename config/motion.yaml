@@ -18,21 +18,95 @@ planner_server:
     # 插件别名，下面 GridBased 就是它的参数块
     GridBased:
       plugin: "nav2_smac_planner::SmacPlannerLattice"
-      # 换规划器只改这一行
-      motion_model: "STATE_LATTICE"
-      # Lattice 必须显式给：不写默认也是它，但写出来便于排查
-      
-      # ★ 必须用 omni 那份。默认值是 ackermann，给阿克曼车用的
-      # 本车自己生成的：config/lattice/omni_10cm.json（omni + grid_resolution=0.1，与代价图对齐）
+      # ★ 换规划器只改这一行
+      # ─────────────────────────────────────────────────────────────────────────
+      # 下面这 20 个是 SmacPlannerLattice 【唯一】认识的参数。
+      # 已用【源码 + 机器人上 .so 里的字符串】双向核实，对的是 nav2 1.3.11（= 机器人版本）。
+      # 注释里的「默认」= Nav2 源码 declare_parameter_if_not_declared 的默认值。
+      # 写成别的名字、或写在 GridBased: 之外 —— 一律【静默忽略】，不报错、不警告。
+      # ─────────────────────────────────────────────────────────────────────────
+
+      # ① 原语文件：Lattice 的「运动模型」在这里，motion.yaml 里没有对应的参数
       lattice_filepath: "/rmcs_install/rmcs-navigation/share/rmcs-navigation/lattice/omni_10cm.json"
-      tolerance: 0.5
-      # 目标容差(m)，起终点在障碍上时就近找可通行点
-      use_astar: true
-      # NavFn 遗留参数，Smac2D 不认（内部固定 A*）
+      # 默认: <nav2_smac_planner>/sample_primitives/5cm_resolution/0.5m_turning_radius/ackermann/output.json
+      # ⚠ 默认那份是【阿克曼 + 5cm】。它在 /opt/ros 下【确实存在】，
+      #   所以路径写错或删掉这行都【不报错】，只会静默退回阿克曼 —— 必须写、且必须是机器人上的绝对路径
+      # ★ 本车的全向特性全在这个 JSON 里：motion_model=omni / grid_resolution=0.1 / 16 航向 / 136 条原语
+      #   其中 grid_resolution 必须 == 代价图分辨率（本车 static_layer 给的是 0.1）
+      #   本车自建，源码与生成配置见 config/lattice/（README 里有复现步骤）
+
+      # ② 搜索行为
       allow_unknown: true
-      # 允许穿越未知区域（实扫图边缘有未知区）
+      # 默认 true —— 允许穿越未知区域
+      # 本图实测未知格 = 0（战队.png 只有 0/255 两种像素），写不写是一样的
+      tolerance: 0.25
+      # 默认 0.25 —— 目标容差(m)；起点/终点落在障碍上时用来就近找可通行点
+      # ⚠ 本车现值 0.5（比官方默认宽松），要回默认就写 0.25
+      # ⚠ 设成 <=0 会【同时】关掉 max_on_approach_iterations
+      max_iterations: 1000000
+      # 默认 1000000 —— 搜索迭代上限；<=0 视为 INT_MAX
+      max_on_approach_iterations: 300
+      # 默认 1000 —— 接近目标后额外允许的迭代次数
+      terminal_checking_interval: 5000
+      # 默认 5000 —— 每 N 次迭代检查一次是否已到终点
+      max_planning_time: 5.0
+      # 默认 5.0 —— 单次规划的时限(s)
+      cache_obstacle_heuristic: false
+      # 默认 false —— 缓存障碍启发式（省 CPU，但障碍变化后不更新；动态场景别开）
+
+      # ③ 运动代价 ——「路径直不直」全靠这几个（源码：nav2_smac_planner/src/node_lattice.cpp）
+      #     直线     : travel_cost = raw                                  ← 零惩罚
+      #     同向转弯 : travel_cost = raw * non_straight_penalty
+      #     左右反复 : travel_cost = raw * (non_straight_penalty + change_penalty)
+      #     倒车     : travel_cost *= reverse_penalty
+      non_straight_penalty: 1.5
+      # 默认 1.05 —— ★ 非直线惩罚（想让路径更直，主要抬这个）
+      # 建议 1.5~2.5；⚠ 抬太高绕障时会【规划失败】，请从 1.5 开始小步试
+      change_penalty: 1.0
+      # 默认 0.05 —— ★ 左右来回摆的额外惩罚（源码注释原文就是 "penalizes wiggling"）
+      # 建议 0.3~1.0
+      cost_penalty: 2.0
+      # ★ 2026-10-01 回退：
+      #   成功版 = 2.0（当前值）；曾试 3.0 想更贴墙，连同 footprint 一起回退。
+      # 默认 2.0 —— 贴障碍的代价放大：raw += 段长 * cost_penalty * 归一化代价(0~1)
+      # ⚠ 这一项【会盖过】直线奖励：代价 250 的格子贡献 2.0*0.99≈1.98，
+      #   而直线奖励 travel_distance_reward 才 0.985 ⇒ 为了躲膨胀带，路径照样画曲线
+      # ⇒ 想让路直又想贴墙：把它降到 1.0，或把 cost_scaling_factor 调成官方 3.0 让膨胀带变窄
+      retrospective_penalty: 0.015
+      # 默认 0.015 —— travel_distance_reward = 1 - 它；越大越不走回头路、不绕远
+      rotation_penalty: 5.0
+      # 默认 5.0 —— 原地旋转惩罚
+      reverse_penalty: 20.0
+      # 默认 2.0 —— 倒车惩罚
+      allow_reverse_expansion: false
+      # 默认 false —— 是否允许反向原语搜索
+      # ⚠ 参数名是 allow_reverse_expansion，【不是】allow_reverse
+
+      # ④ 解析扩展（收尾阶段用解析曲线直接连到目标，加速收敛）
+      analytic_expansion_ratio: 3.5
+      # 默认 3.5 —— 触发解析扩展的迭代比
+      analytic_expansion_max_length: 3.0
+      # 默认 3.0 —— 解析扩展最大长度(m)，内部会除以代价图分辨率换算成格
+      analytic_expansion_max_cost: 200.0
+      # 默认 200.0 —— 解析扩展允许穿越的最大代价
+      analytic_expansion_max_cost_override: false
+      # 默认 false —— 强制忽略上面那条限制
+
+      # ⑤ 启发式查找表
+      lookup_table_size: 20.0
+      # 默认 20.0 —— 边长，单位【米】；插件会除以代价图分辨率换算成格数
+      # 本车: 20 / 0.1 = 200 格 ⇒ 就是日志里那句 "lookup table size set 200.000000, increasing size by 1"
+      # ⚠ 换算结果为偶数时会自动 +1 变奇数
+
+      # ⑥ ★ 以下 3 个是【死键】：Lattice 不声明它们，写在这里等于没写（保留仅为留档，可直接删）
+      motion_model: "STATE_LATTICE"
+      # ← ★ 不是参数！Lattice 内部硬编码 STATE_LATTICE
+      #   （源码: _motion_model = MotionModel::STATE_LATTICE; 无 declare_parameter）
+      #   motion_model 只是【原语 JSON 文件里】的字段名，不是 ROS 参数
+      use_astar: true
+      # ← Navfn / Smac2D 的遗留参数
       use_final_approach_orientation: false
-      # 到点不强制对齐朝向
+      # ← SmacPlannerHybrid 的遗留参数
 
 global_costmap:
   global_costmap:
@@ -45,7 +119,17 @@ global_costmap:
       robot_base_frame: base_link
       # 机器人本体坐标系
       footprint: "[[0.1, 0.1], [0.1, -0.1], [-0.1, -0.1], [-0.1, 0.1]]"
-      # 0.2m 方，与局部 0.495 不一致（遗留 bug）
+      # ★ 2026-10-01 回退：成功版 = 0.2m 方（半宽 0.1）。
+      #   曾试 0.155（0.31m 方）想与 local 对齐、消除「有缝就想钻」，
+      #   但那一版【未在完好硬件上验证过】，为拿回已知可用的基线先回退。
+      # ⚠ 已知遗留问题（尚未解决）：本值比 local_costmap 的 0.2475 小 2.475 倍
+      #   ⇒ 全局图认为 0.2m 的缝就能过 ⇒「有缝就想钻」；
+      #     而局部图（半宽 0.2475）知道过不去，车开到口子上就卡住。
+      #   要修就把它抬到与 local 一致（0.2475），但必须重新验证。
+      # 车体尺寸依据：sentry.yaml → steering_wheel_controller.vehicle_radius = 0.2687
+      #   （车心到 4 个舵轮模块的距离；模块在 0/90/180/270° ⇒ 菱形分布）
+      #   ﹋ 轮心圆半径 0.2687 / 直径 0.537m，再加轮体宽度 ⇒ 车体外接 ≈ 0.30。
+      #   ⇒ 0.1 严重偏小、0.2475~0.255 才接近真车；0.1 是「为了能跑通」的妥协值。
       update_frequency: 5.0
       # 重算频率(Hz)
       publish_frequency: 5.0
@@ -71,9 +155,11 @@ global_costmap:
         inflation_radius: 0.5
         # 膨胀半径(m)，调小更贴墙（官方 tcd-test 0.22/0.34）
         cost_scaling_factor: 0.5
-        # 代价衰减率，越大衰减越快、越敢贴墙
-        # Nav2 默认 3.0；原值 0.5 太小 ⇒ 整条膨胀带都是 224~252 的天价（critical_cost 才 120）
-        # ⇒ 车只要靠近墙 0.5m 内就被当成「快撞上」，窄口根本不敢进。改 inflation_radius 无用就是因为它。
+        # ★ 2026-10-01 回退：成功版 = 0.5（当前值）；曾试 1.3。
+        # 代价衰减率，越大衰减越快、越敢贴墙（Nav2 默认 3.0）
+        # ⚠ 0.5 偏小 ⇒ 整条膨胀带都是 224~252 的天价（critical_cost 才 120）
+        #   ⇒ 车只要靠近墙 0.5m 内就被当成「快撞上」，窄口不敢进。
+        #   理论上该抬到 1.3~3.0，但成功版就是 0.5 ⇒ 先按成功版跑，改之前先确认硬件正常。
 
 # 局部地图 + 局部规划 / 控制
 controller_server:
@@ -203,13 +289,13 @@ controller_server:
         # 每几个轨迹点查一次代价
       GoalCritic:
         enabled: true
-        cost_weight: 3.0
+        cost_weight: 5.0
         # 接近目标的奖励权重
         threshold_to_consider: 1.0
         # 距目标 1m 内才生效
       PathAlignCritic:
         enabled: true
-        cost_weight: 4.7
+        cost_weight: 5.2
         # ★ 调大 = 更贴全局路径（官方 tcd-test 用 4.5）
         threshold_to_consider: 1.0
         # 距目标 1m 内开始降权
@@ -234,7 +320,11 @@ local_costmap:
       robot_base_frame: base_link
       # 机器人本体坐标系
       footprint: "[[0.2475, 0.2475], [0.2475, -0.2475], [-0.2475, -0.2475], [-0.2475, 0.2475]]"
-      # 0.495m 方（这份是对的）
+      # ★ 2026-10-01 回退：成功版 = 0.495m 方（半宽 0.2475）。
+      #   曾试 0.2550（0.510m）与 global 对齐，随本轮一起回退。
+      # ⚠ 这个 footprint 决定两件事：MPPI CostCritic.consider_footprint 的碰撞检查，
+      #   以及膨胀层的【致命带】宽度（= inscribed_radius = 半宽，与 inflation_radius 无关）
+      # ⚠ 窄口可通行宽度只剩 W − 2×半宽 = W − 0.495（与 global 的 0.1 不一致，见上）
       update_frequency: 10.0
       # 重算频率(Hz)
       publish_frequency: 10.0
@@ -277,5 +367,6 @@ local_costmap:
         inflation_radius: 0.5
         # 膨胀半径(m)
         cost_scaling_factor: 0.5
-        # 代价衰减率，越大衰减越快、越敢贴墙（Nav2 默认 3.0；原值 0.5 会让整条膨胀带都是天价）
-        # 注意：致命带由 footprint 的 inscribed_radius 决定，与本值无关 ⇒ 改了碰撞保护不变，只是不再「贴着墙就怂」
+        # ★ 2026-10-01 回退：成功版 = 0.5（当前值）；曾试 1.5。
+        # 代价衰减率，越大衰减越快、越敢贴墙（Nav2 默认 3.0；0.5 会让整条膨胀带都是天价）
+        # 注意：致命带由 footprint 的 inscribed_radius 决定，与本值无关 ⇒ 改它不改变碰撞保护
