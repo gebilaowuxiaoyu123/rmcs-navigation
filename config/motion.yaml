@@ -39,9 +39,10 @@ planner_server:
       allow_unknown: true
       # 默认 true —— 允许穿越未知区域
       # 本图实测未知格 = 0（战队.png 只有 0/255 两种像素），写不写是一样的
-      tolerance: 0.25
+      tolerance: 0.5
+      # ★ 2026-10-01 回退到 RMCS 原版值 = 0.5（原版 NavfnPlanner 用的就是 0.5）
       # 默认 0.25 —— 目标容差(m)；起点/终点落在障碍上时用来就近找可通行点
-      # ⚠ 本车现值 0.5（比官方默认宽松），要回默认就写 0.25
+      # ⚠ 比官方默认宽松；想收紧就写 0.25
       # ⚠ 设成 <=0 会【同时】关掉 max_on_approach_iterations
       max_iterations: 1000000
       # 默认 1000000 —— 搜索迭代上限；<=0 视为 INT_MAX
@@ -188,8 +189,9 @@ controller_server:
     general_goal_checker:
       # 只看位置，不看朝向
       plugin: "nav2_controller::PositionGoalChecker"
-      xy_goal_tolerance: 0.25
-      # 到点容差(m)，实车建议 0.25
+      xy_goal_tolerance: 0.1
+      # ★ 2026-10-01 回退到 RMCS 原版值 = 0.1（曾改成 0.25）
+      # 到点容差(m)；0.1 偏严 ⇒ 目标点附近定位有偏差时容易「到了却判没到」
 
     controller_plugins: ["FollowPath"]
     # 局部控制器插件别名
@@ -273,8 +275,16 @@ controller_server:
         enabled: true
         cost_weight: 10.0
         # 基础权重
-        critical_cost: 300.0
+        critical_cost: 120.0
+        # ★ 2026-10-01 回退到 RMCS 原版值 = 120.0（曾改成 300.0）
         # 危险代价附加惩罚
+        # ⚠⚠ 已知地雷：本项必须 > 252！
+        #   源码 nav2_mppi_controller/critics/cost_critic.cpp：
+        #     if (cost > critical_cost_) cost += collision_cost_;   // collision_cost = 8e6
+        #   而本车 cost_scaling_factor = 0.5 ⇒ 膨胀带内代价全落在 204~252
+        #   ⇒ 120 会把【整条膨胀带判成碰撞】
+        #   ⇒ 现象：目标落在灰格上就完全不动（只在代价 0 的白格能走）
+        #   若复现「点了目标不走」，第一件事就是把它改回 300.0
         collision_cost: 8000000.0
         # 撞上障碍（≈绝不允许）
         near_collision_cost: 230
@@ -295,8 +305,10 @@ controller_server:
         # 距目标 1m 内才生效
       PathAlignCritic:
         enabled: true
-        cost_weight: 5.2
-        # ★ 调大 = 更贴全局路径（官方 tcd-test 用 4.5）
+        cost_weight: 0.8
+        # ★ 2026-10-01 回退到 RMCS 原版值 = 0.8（曾改成 5.2）
+        # ⚠ 0.8 极低 ⇒ 几乎不约束「贴合全局路径」，MPPI 会自己找省力的走法
+        #   （官方 tcd-test 用 4.5，Nav2 默认 14.0）
         threshold_to_consider: 1.0
         # 距目标 1m 内开始降权
         trajectory_point_step: 3
