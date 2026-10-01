@@ -95,10 +95,15 @@ on_init = function()
 
 			action:update_enable_control(true)
 			action:switch_topic_forward(true)
-			action:switch_motion_mode("attack")
+			action:switch_motion_mode("normal")
 			action:gimbal_suspend()
 
-			intent_handler = scheduler:append_task(intent)
+			-- ⚠ 2026-10-01 考核验收：手动点两个点，【不开】自动 4 点巡逻。
+			-- 巡逻一开，车会在重定位完成后立刻自己跑去 kAttackInLeft 等点，
+			-- 和手动发的目标抢（navigate 里的 wait_until 超时后会 return，
+			-- 把整个 intent 任务结束掉，日志里会出现 “navigate timeout”）。
+			-- 想恢复巡检：去掉下面这行的注释即可。
+			-- intent_handler = scheduler:append_task(intent)
 
 			train_started = true
 		end
