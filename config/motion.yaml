@@ -59,7 +59,13 @@ planner_server:
       #     同向转弯 : travel_cost = raw * non_straight_penalty
       #     左右反复 : travel_cost = raw * (non_straight_penalty + change_penalty)
       #     倒车     : travel_cost *= reverse_penalty
-      non_straight_penalty: 2
+      non_straight_penalty: 2.0
+      # ⚠️⚠️ 【必须带小数点】它是 double！写成 `2` 会让 planner_server 直接 FATAL：
+      #   parameter {GridBased.non_straight_penalty} is of type {double},
+      #   setting it to {integer} is not allowed
+      #   ⇒ 整条 motion 栈起不来（代价图/plan/trajectories 话题全消失），
+      #     表现为「话题丢了几个」。判据：ros2 lifecycle get 是 unconfigured [1] 而非 active [3]。
+      # 2026-10-01 深夜真的踩了一次（0.3/0.4 那次改动里被写成 2）。
       # 默认 1.05 —— ★ 非直线惩罚（想让路径更直，主要抬这个）
       # 建议 1.5~2.5；⚠ 抬太高绕障时会【规划失败】，请从 1.5 开始小步试
       change_penalty: 1.0
